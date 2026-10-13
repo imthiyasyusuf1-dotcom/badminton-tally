@@ -135,12 +135,10 @@
 
 <script>
 const PLAYERS = ["Matty", "Wilford", "Sidney", "Marcus", "Yusuf"];
-const BIN_ID_KEY = "badminton_bin_id_v1";
-// Using jsonblob.com as a free, no-signup shared JSON store
-const API_BASE = "https://jsonblob.com/api/jsonBlob";
+// Tiny self-hosted sync server (Node + Tailscale Funnel), no signup needed
+const API_BASE = "https://macbook.tail5cd145.ts.net:8841";
 
 let state = null;
-let blobId = new URLSearchParams(location.search).get("b");
 let polling = null;
 
 function defaultState() {
@@ -149,29 +147,15 @@ function defaultState() {
   return { scores };
 }
 
-async function createBlob() {
-  const res = await fetch(API_BASE, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(defaultState())
-  });
-  const loc = res.headers.get("Location");
-  const id = loc.split("/").pop();
-  return id;
-}
-
 async function fetchState() {
-  const res = await fetch(`${API_BASE}/${blobId}`, { cache: "no-store" });
+  const res = await fetch(`${API_BASE}/scores`, { cache: "no-store" });
   if (!res.ok) throw new Error("fetch failed");
-  return res.json();
+  const scores = await res.json();
+  return { scores };
 }
 
 async function saveState() {
-  await fetch(`${API_BASE}/${blobId}`, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(state)
-  });
+  // state is saved per-action via /adjust or /reset, not a bulk PUT
 }
 
 function render() {
@@ -217,7 +201,14 @@ async function onAdjust(e) {
   render();
   setStatus("saving...");
   try {
-    await saveState();
+    const res = await fetch(`${API_BASE}/adjust`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ player: p, delta: d })
+    });
+    const scores = await res.json();
+    state = { scores };
+    render();
     setStatus("synced ✓");
   } catch (err) {
     setStatus("offline, retrying...");
@@ -229,27 +220,15 @@ function setStatus(txt) {
 }
 
 async function init() {
-  if (!blobId) {
-    setStatus("setting up shared board...");
-    try {
-      blobId = await createBlob();
-      const url = new URL(location.href);
-      url.searchParams.set("b", blobId);
-      history.replaceState(null, "", url);
-    } catch (e) {
-      setStatus("setup failed, reload");
-      return;
-    }
-  }
   try {
     state = await fetchState();
   } catch (e) {
     state = defaultState();
+    setStatus("offline, retrying...");
   }
   render();
   setStatus("synced ✓");
   startPolling();
-  showShareLink();
 }
 
 function startPolling() {
@@ -268,19 +247,16 @@ function startPolling() {
   }, 2500);
 }
 
-function showShareLink() {
-  const url = new URL(location.href);
-  url.searchParams.set("b", blobId);
-  console.log("Share this link:", url.toString());
-}
-
 document.getElementById("resetBtn").addEventListener("click", async () => {
   if (!confirm("Reset all scores to 0?")) return;
   state = defaultState();
   render();
   setStatus("saving...");
   try {
-    await saveState();
+    const res = await fetch(`${API_BASE}/reset`, { method: "POST" });
+    const scores = await res.json();
+    state = { scores };
+    render();
     setStatus("synced ✓");
   } catch (e) {
     setStatus("offline");
